@@ -1,68 +1,29 @@
 # NBA Match Analyzer
 
-A free, lightweight NBA analytics app for exploring team and player trends and generating probability-based match forecasts.
+App gratuita in italiano per consultare i risultati della stagione NBA corrente e analizzare forma squadra e statistiche individuali.
 
-This project is designed as an MVP for a free local app. It does not guarantee winning bets or exact match outcomes. It helps you reason with historical team and player data, recent form, and basic probabilistic modeling.
+## Avvio su Windows
 
-## Features
+1. Installa Python 3 dal sito ufficiale e durante l'installazione seleziona **Add Python to PATH**.
+2. Scarica il repository con **Code → Download ZIP** ed estrailo.
+3. Apri la cartella `nba-match-analyzer`.
+4. Clicca la barra del percorso in alto, scrivi `powershell` e premi Invio.
+5. Nella finestra che si apre, esegui questi comandi uno alla volta:
 
-- Analyze team-level performance using recent game data
-- Analyze player-level trends for points, assists, rebounds and blocks
-- Estimate win probabilities between two teams
-- Project player stat lines against a chosen threshold
-- Works without paid APIs
-- Supports CSV uploads and includes sample data
-
-## Data model
-
-The app expects two CSV files:
-
-1. Team data: `teams.csv`
-2. Player data: `players.csv`
-
-### Team CSV
-
-```csv
-date,team,opponent,points,opponent_points
-2024-01-10,Boston Celtics,Miami Heat,120,110
-2024-01-12,Miami Heat,Boston Celtics,105,112
+```powershell
+py -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe -m streamlit run app.py
 ```
 
-### Player CSV
+Quando appare `http://localhost:8501`, apri quell'indirizzo nel browser. Per fermare l'app torna alla finestra PowerShell e premi Ctrl+C.
 
-```csv
-date,player,team,opponent,minutes,points,assists,rebounds,blocks
-2024-01-10,Jayson Tatum,Boston Celtics,Miami Heat,38,31,5,9,1
-2024-01-12,Tyrese Maxey,Philadelphia 76ers,Boston Celtics,35,22,7,3,1
-```
+## Dati
 
-## Install
+La modalità predefinita prova a scaricare i dati della stagione NBA corrente dalla libreria pubblica `nba_api`, senza chiavi API e senza costi. Per evitare di presentare dati vecchi come aggiornati, l'app mostra un errore se il servizio non è raggiungibile, invece di passare silenziosamente ai dati dimostrativi. L'aggiornamento dipende dalla disponibilità e dai limiti del servizio NBA Stats: potrebbe non funzionare in ogni rete o momento.
 
-```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-```
+È disponibile anche una modalità CSV. Le colonne richieste sono indicate nell'interfaccia.
 
-## Run
+## Limiti
 
-```bash
-streamlit run app.py
-```
-
-## Notes
-
-- This is a free MVP, not a guaranteed betting system.
-- It is better used for research and analysis than for automatic decision-making.
-- The app can be linked later to public NBA datasets or APIs if you want to automate the data collection step.
-
-## Future upgrades
-
-- Add public API integration such as balldontlie or NBA public endpoints
-- Add more advanced feature engineering and model calibration
-- Add user accounts and saved analyses
-- Add historical season comparisons and lineups
-
-## Important
-
-This app is meant for educational and analytical use. It does not promise reliable profits and should not be marketed as a guaranteed prediction engine.
+Le stime usano statistiche recenti e un modello semplice, non dati sugli infortuni o formazioni confermate e non un modello validato. Le probabilità non sono garanzie e l'app non piazza scommesse.
