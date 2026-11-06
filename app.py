@@ -2,6 +2,18 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
+try:
+    from nba_api.stats.static import teams as nba_teams
+    from nba_api.stats.static import players as nba_players
+    from nba_api.stats.endpoints import teamgamelog, playergamelog, teamroster, boxscoretraditionalv2
+except ImportError:  # pragma: no cover
+    nba_teams = None
+    nba_players = None
+    teamgamelog = None
+    playergamelog = None
+    teamroster = None
+    boxscoretraditionalv2 = None
+
 TEAM_COLUMNS = ["date", "team", "opponent", "points", "opponent_points"]
 PLAYER_COLUMNS = ["date", "player", "team", "opponent", "minutes", "points", "assists", "rebounds", "blocks"]
 PLAYER_STATS = ["points", "assists", "rebounds", "blocks"]
@@ -98,6 +110,35 @@ def load_uploaded_data(team_upload, player_upload):
     teams = teams.dropna(subset=["date"]).sort_values("date").reset_index(drop=True)
     players = players.dropna(subset=["date"]).sort_values("date").reset_index(drop=True)
     return teams, players
+
+
+def minute_to_float(value):
+    if pd.isna(value):
+        return 0.0
+    text = str(value).strip()
+    if ":" in text:
+        try:
+            minutes, seconds = text.split(":")
+            return float(minutes) + float(seconds) / 60.0
+        except ValueError:
+            return float(text.split(":")[0])
+    try:
+        return float(text)
+    except ValueError:
+        return 0.0
+
+
+def parse_matchup_opponent(matchup):
+    if pd.isna(matchup):
+        return "Unknown"
+    text = str(matchup).strip()
+    if " @ " in text:
+        return text.split(" @ ", 1)[1].strip()
+    if " vs. " in text.lower():
+        return text.split(" vs. ", 1)[1].strip()
+    if " vs " in text.lower():
+        return text.split(" vs ", 1)[1].strip()
+    return text
 
 
 def recent_window(values, window=10):
@@ -202,20 +243,123 @@ def estimate_player_projection(player_name, player_team, players_df, stat_name, 
     }
 
 
+def fetch_live_nba_data(season="2024-25", games_back=10):
+    if nba_teams is None or teamgamelog is None or playergamelog is None or teamroster is None or boxscoretraditionalv2 is None:
+        raise ImportError("The nba_api package is not installed. Please install requirements.txt first.")
+
+    team_list = nba_teams.get_teams()
+    team_by_id = {int(team["id"]): team for team in team_list}
+    team_records = []
+
+    for team in team_list:
+        team_id = int(team["id"])
+        try:
+            log = teamgamelog.TeamGameLog(team_id=team_id, season=season, season_type_all_star="Regular Season")
+            log_df = log.get_data_frames()[0].head(games_back).copy()
+        except Exception:
+            continue
+
+        for _, row in log_df.iterrows():
+            game_id = row.get("GAME_ID")
+            opp_points = np.nan
+            opp_name = "Unknown"
+            try:
+                box = boxscoretraditionalv2.BoxScoreTraditionalV2(game_id=game_id).get_data_frames()[0]
+                if not box.empty:
+                    team_rows = box[box["TEAM_ID"].astype(str) == str(team_id)]
+                    opp_rows = box[box["TEAM_ID"].astype(str) != str(team_id)]
+                    if not opp_rows.empty:
+                        opp_points = float(opp_rows.iloc[0]["PTS"])
+                        opp_name = team_by_id.get(int(opp_rows.iloc[0]["TEAM_ID"]), {}).get("full_name", opp_rows.iloc[0].get("TEAM_NAME", "Unknown"))
+            except Exception:
+                opp_points = np.nan
+                opp_name = parse_matchup_opponent(row.get("MATCHUP", "Unknown"))
+
+            team_records.append({
+                "date": row.get("GAME_DATE"),
+                "team": team["full_name"],
+                "opponent": opp_name,
+                "points": float(row.get("PTS", 0.0) or 0.0),
+                "opponent_points": float(opp_points) if pd.notna(opp_points) else np.nan,
+            })
+
+    player_records = []
+    for team in team_list:
+        team_id = int(team["id"])
+        try:
+            roster = teamroster.TeamRoster(team_id=team_id)
+            roster_df = roster.get_data_frames()[0]
+        except Exception:
+            continue
+
+        for _, player_row in roster_df.head(12).iterrows():
+            player_id = int(player_row.get("PLAYER_ID"))
+            player_name = player_row.get("PLAYER")
+            try:
+                player_log = playergamelog.PlayerGameLog(player_id=player_id, season=season)
+                player_df = player_log.get_data_frames()[0].head(games_back).copy()
+            except Exception:
+                continue
+
+            for _, row in player_df.iterrows():
+                player_records.append({
+                    "date": row.get("GAME_DATE"),
+                    "player": player_name,
+                    "team": team["full_name"],
+                    "opponent": parse_matchup_opponent(row.get("MATCHUP", "Unknown")),
+                    "minutes": minute_to_float(row.get("MIN", 0)),
+                    "points": float(row.get("PTS", 0.0) or 0.0),
+                    "assists": float(row.get("AST", 0.0) or 0.0),
+                    "rebounds": float(row.get("REB", 0.0) or 0.0),
+                    "blocks": float(row.get("BLK", 0.0) or 0.0),
+                })
+
+    teams_df = pd.DataFrame(team_records)
+    players_df = pd.DataFrame(player_records)
+
+    if teams_df.empty or players_df.empty:
+        raise ValueError("No live NBA data could be fetched for the selected season.")
+
+    teams_df["date"] = pd.to_datetime(teams_df["date"], errors="coerce")
+    players_df["date"] = pd.to_datetime(players_df["date"], errors="coerce")
+    teams_df = teams_df.dropna(subset=["date"]).sort_values("date").reset_index(drop=True)
+    players_df = players_df.dropna(subset=["date"]).sort_values("date").reset_index(drop=True)
+    return teams_df, players_df
+
+
 with st.sidebar:
     st.header("Input")
     use_demo = st.checkbox("Use sample data", value=True)
+
     if not use_demo:
         team_file = st.file_uploader("Upload team CSV", type="csv")
         player_file = st.file_uploader("Upload player CSV", type="csv")
     else:
         team_file = None
         player_file = None
-    st.caption("This is a free analytics tool and not a guaranteed betting system.")
 
+    st.caption("This is a free analytics tool. It does not guarantee wins or exact outcomes.")
+
+    st.markdown("---")
+    st.subheader("Live free data")
+    use_live = st.checkbox("Load live NBA data (free, no API key)", value=False)
+    season = st.selectbox("Season", ["2024-25", "2023-24", "2022-23", "2021-22"], index=0) if use_live else "2024-25"
+
+    if use_live:
+        if st.button("Fetch live data"):
+            try:
+                live_teams_df, live_players_df = fetch_live_nba_data(season=season, games_back=10)
+                st.session_state["live_teams_df"] = live_teams_df
+                st.session_state["live_players_df"] = live_players_df
+                st.success("Live NBA data loaded successfully.")
+            except Exception as exc:
+                st.warning(f"Live data could not be loaded automatically: {exc}")
 
 if use_demo:
     teams_df, players_df = load_demo_data()
+elif "live_teams_df" in st.session_state and "live_players_df" in st.session_state and use_live:
+    teams_df = st.session_state["live_teams_df"]
+    players_df = st.session_state["live_players_df"]
 else:
     try:
         teams_df, players_df = load_uploaded_data(team_file, player_file)
