@@ -4,15 +4,12 @@ import streamlit as st
 
 try:
     from nba_api.stats.static import teams as nba_teams
-    from nba_api.stats.static import players as nba_players
-    from nba_api.stats.endpoints import teamgamelog, playergamelog, teamroster, boxscoretraditionalv2
-except ImportError:  # pragma: no cover
+    from nba_api.stats.endpoints import teamgamelog, playergamelog, teamroster
+except Exception:  # pragma: no cover
     nba_teams = None
-    nba_players = None
     teamgamelog = None
     playergamelog = None
     teamroster = None
-    boxscoretraditionalv2 = None
 
 TEAM_COLUMNS = ["date", "team", "opponent", "points", "opponent_points"]
 PLAYER_COLUMNS = ["date", "player", "team", "opponent", "minutes", "points", "assists", "rebounds", "blocks"]
@@ -20,7 +17,7 @@ PLAYER_STATS = ["points", "assists", "rebounds", "blocks"]
 
 st.set_page_config(page_title="NBA Match Analyzer", page_icon="🏀", layout="wide")
 st.title("🏀 NBA Match Analyzer")
-st.caption("Free analytics dashboard for team form, player trends, and probability-based matchup analysis.")
+st.caption("Free NBA intelligence app for team form, player trends, and probabilistic matchup analysis.")
 
 
 @st.cache_data
@@ -100,10 +97,8 @@ def load_uploaded_data(team_upload, player_upload):
 
     missing_teams = [col for col in TEAM_COLUMNS if col not in teams.columns]
     missing_players = [col for col in PLAYER_COLUMNS if col not in players.columns]
-
     if missing_teams or missing_players:
-        missing = ", ".join(missing_teams + missing_players)
-        raise ValueError(f"Missing required columns: {missing}")
+        raise ValueError(f"Missing required columns: {', '.join(missing_teams + missing_players)}")
 
     teams["date"] = pd.to_datetime(teams["date"], errors="coerce")
     players["date"] = pd.to_datetime(players["date"], errors="coerce")
@@ -112,37 +107,26 @@ def load_uploaded_data(team_upload, player_upload):
     return teams, players
 
 
-def minute_to_float(value):
+def normalize_minutes(value):
     if pd.isna(value):
         return 0.0
     text = str(value).strip()
     if ":" in text:
         try:
-            minutes, seconds = text.split(":")
+            minutes, seconds = text.split(":", 1)
             return float(minutes) + float(seconds) / 60.0
         except ValueError:
-            return float(text.split(":")[0])
+            return float(text.split(":", 1)[0])
     try:
         return float(text)
     except ValueError:
         return 0.0
 
 
-def parse_matchup_opponent(matchup):
-    if pd.isna(matchup):
-        return "Unknown"
-    text = str(matchup).strip()
-    if " @ " in text:
-        return text.split(" @ ", 1)[1].strip()
-    if " vs. " in text.lower():
-        return text.split(" vs. ", 1)[1].strip()
-    if " vs " in text.lower():
-        return text.split(" vs ", 1)[1].strip()
-    return text
-
-
-def recent_window(values, window=10):
-    return pd.Series(values).tail(window).reset_index(drop=True)
+def recent_window(series, window=10):
+    if series.empty:
+        return pd.Series(dtype=float)
+    return pd.Series(series).tail(window).reset_index(drop=True)
 
 
 def weighted_recent_mean(frame, stat, window=10):
@@ -153,38 +137,24 @@ def weighted_recent_mean(frame, stat, window=10):
     return 0.35 * values.mean() + 0.65 * recent.mean()
 
 
-def team_summary(team_name, teams_df):
-    team = teams_df[teams_df["team"].astype(str) == team_name].copy().sort_values("date").reset_index(drop=True)
-    if team.empty:
-        raise ValueError(f"No data available for {team_name}.")
-
-    team["point_diff"] = pd.to_numeric(team["points"], errors="coerce") - pd.to_numeric(team["opponent_points"], errors="coerce")
-    last5_points = recent_window(pd.to_numeric(team["points"], errors="coerce"), 5).mean()
-    last5_opp_points = recent_window(pd.to_numeric(team["opponent_points"], errors="coerce"), 5).mean()
-    last5_diff = recent_window(pd.to_numeric(team["point_diff"], errors="coerce"), 5).mean()
-    avg_points = team["points"].mean()
-    avg_opp_points = team["opponent_points"].mean()
-    rating = (avg_points - avg_opp_points) * 0.7 + last5_diff * 0.3
-
-    return {
-        "team": team_name,
-        "avg_points": float(avg_points),
-        "avg_opp_points": float(avg_opp_points),
-        "last5_points": float(last5_points),
-        "last5_opp_points": float(last5_opp_points),
-        "last5_diff": float(last5_diff),
-        "rating": float(rating),
-        "points_history": pd.Series(pd.to_numeric(team["points"], errors="coerce").dropna()),
-        "opp_points_history": pd.Series(pd.to_numeric(team["opponent_points"], errors="coerce").dropna()),
-    }
+def safe_mean(series):
+    return float(pd.to_numeric(series, errors="coerce").dropna().mean()) if not pd.to_numeric(series, errors="coerce").dropna().empty else 0.0
 
 
 def estimate_team_matchup(team_a, team_b, teams_df):
-    a = team_summary(team_a, teams_df)
-    b = team_summary(team_b, teams_df)
+    team_a_df = teams_df[teams_df["team"].astype(str) == team_a].copy().sort_values("date")
+    team_b_df = teams_df[teams_df["team"].astype(str) == team_b].copy().sort_values("date")
 
-    proj_a = 0.5 * (a["last5_points"] + b["last5_opp_points"])
-    proj_b = 0.5 * (b["last5_points"] + a["last5_opp_points"])
+    if team_a_df.empty or team_b_df.empty:
+        raise ValueError("Missing team data.")
+
+    a_points = pd.to_numeric(team_a_df["points"], errors="coerce").dropna()
+    b_points = pd.to_numeric(team_b_df["points"], errors="coerce").dropna()
+    a_opp = pd.to_numeric(team_a_df["opponent_points"], errors="coerce").dropna()
+    b_opp = pd.to_numeric(team_b_df["opponent_points"], errors="coerce").dropna()
+
+    proj_a = 0.5 * (a_points.tail(5).mean() + b_opp.tail(5).mean())
+    proj_b = 0.5 * (b_points.tail(5).mean() + a_opp.tail(5).mean())
 
     diff = proj_a - proj_b
     win_a = 1 / (1 + np.exp(-(diff / 12.0)))
@@ -192,8 +162,8 @@ def estimate_team_matchup(team_a, team_b, teams_df):
     total = proj_a + proj_b
 
     rng = np.random.default_rng(42)
-    sim_a = rng.normal(proj_a, max(5.5, a["last5_points"] * 0.14), 30000)
-    sim_b = rng.normal(proj_b, max(5.5, b["last5_points"] * 0.14), 30000)
+    sim_a = rng.normal(proj_a, max(5.5, a_points.tail(10).std(ddof=0) if len(a_points.tail(10)) > 1 else 5.5), 25000)
+    sim_b = rng.normal(proj_b, max(5.5, b_points.tail(10).std(ddof=0) if len(b_points.tail(10)) > 1 else 5.5), 25000)
     over_total = float(np.mean(sim_a + sim_b > 220.0))
 
     return {
@@ -205,121 +175,114 @@ def estimate_team_matchup(team_a, team_b, teams_df):
         "win_a": float(win_a),
         "win_b": float(win_b),
         "over_total": float(over_total),
-        "a_summary": a,
-        "b_summary": b,
+        "a_avg_points": float(a_points.mean()),
+        "b_avg_points": float(b_points.mean()),
+        "a_opp_avg": float(a_opp.mean()),
+        "b_opp_avg": float(b_opp.mean()),
+        "a_recent_form": float(a_points.tail(5).mean()),
+        "b_recent_form": float(b_points.tail(5).mean()),
     }
 
 
 def estimate_player_projection(player_name, player_team, players_df, stat_name, line_value):
     player_rows = players_df[
-        (players_df["player"].astype(str) == player_name) & (players_df["team"].astype(str) == player_team)
-    ].copy().sort_values("date").reset_index(drop=True)
+        (players_df["player"].astype(str) == player_name)
+        & (players_df["team"].astype(str) == player_team)
+    ].copy().sort_values("date")
 
     if player_rows.empty:
-        raise ValueError("No data available for this player and team.")
+        raise ValueError("No player data available.")
 
-    recent = pd.to_numeric(player_rows[stat_name], errors="coerce").dropna()
-    if recent.empty:
-        raise ValueError("Player stat values not available.")
+    stat_series = pd.to_numeric(player_rows[stat_name], errors="coerce").dropna()
+    if stat_series.empty:
+        raise ValueError("No valid stat values for this player.")
 
-    recent_10 = recent.tail(10)
-    projection = 0.5 * recent_10.mean() + 0.5 * recent.mean()
-    sigma = max(1.0, recent_10.std(ddof=0) if len(recent_10) > 1 else 1.0)
+    recent = stat_series.tail(10)
+    projection = 0.5 * recent.mean() + 0.5 * stat_series.mean()
+    sigma = max(1.0, recent.std(ddof=0) if len(recent) > 1 else 1.0)
 
     rng = np.random.default_rng(7)
     sims = rng.normal(projection, sigma, 25000)
     over = float(np.mean(sims > float(line_value)))
 
     return {
-        "player": player_name,
-        "team": player_team,
-        "stat": stat_name,
         "projection": float(projection),
-        "line_value": float(line_value),
-        "over_probability": over,
-        "recent_avg": float(recent_10.mean()),
-        "games": int(len(recent)),
-        "history": recent.reset_index(drop=True),
+        "recent_avg": float(recent.mean()),
+        "games": int(len(stat_series)),
+        "over_probability": float(over),
+        "history": stat_series.reset_index(drop=True),
     }
 
 
 def fetch_live_nba_data(season="2024-25", games_back=10):
-    if nba_teams is None or teamgamelog is None or playergamelog is None or teamroster is None or boxscoretraditionalv2 is None:
-        raise ImportError("The nba_api package is not installed. Please install requirements.txt first.")
+    if nba_teams is None or teamgamelog is None or playergamelog is None or teamroster is None:
+        raise ImportError("The free NBA data library is not available. Please install nba_api.")
 
     team_list = nba_teams.get_teams()
-    team_by_id = {int(team["id"]): team for team in team_list}
     team_records = []
+    player_records = []
 
     for team in team_list:
         team_id = int(team["id"])
         try:
             log = teamgamelog.TeamGameLog(team_id=team_id, season=season, season_type_all_star="Regular Season")
-            log_df = log.get_data_frames()[0].head(games_back).copy()
+            df = log.get_data_frames()[0].head(games_back).copy()
         except Exception:
             continue
 
-        for _, row in log_df.iterrows():
-            game_id = row.get("GAME_ID")
-            opp_points = np.nan
-            opp_name = "Unknown"
-            try:
-                box = boxscoretraditionalv2.BoxScoreTraditionalV2(game_id=game_id).get_data_frames()[0]
-                if not box.empty:
-                    team_rows = box[box["TEAM_ID"].astype(str) == str(team_id)]
-                    opp_rows = box[box["TEAM_ID"].astype(str) != str(team_id)]
-                    if not opp_rows.empty:
-                        opp_points = float(opp_rows.iloc[0]["PTS"])
-                        opp_name = team_by_id.get(int(opp_rows.iloc[0]["TEAM_ID"]), {}).get("full_name", opp_rows.iloc[0].get("TEAM_NAME", "Unknown"))
-            except Exception:
-                opp_points = np.nan
-                opp_name = parse_matchup_opponent(row.get("MATCHUP", "Unknown"))
-
+        for _, row in df.iterrows():
+            game_date = row.get("GAME_DATE")
+            opp_name = row.get("MATCHUP", "Unknown")
+            if " @ " in str(opp_name):
+                opp_name = str(opp_name).split(" @ ", 1)[1]
+            elif " vs. " in str(opp_name).lower():
+                opp_name = str(opp_name).split(" vs. ", 1)[1]
             team_records.append({
-                "date": row.get("GAME_DATE"),
+                "date": game_date,
                 "team": team["full_name"],
                 "opponent": opp_name,
                 "points": float(row.get("PTS", 0.0) or 0.0),
-                "opponent_points": float(opp_points) if pd.notna(opp_points) else np.nan,
+                "opponent_points": float(row.get("PTS", 0.0) or 0.0),
             })
 
-    player_records = []
-    for team in team_list:
-        team_id = int(team["id"])
         try:
             roster = teamroster.TeamRoster(team_id=team_id)
-            roster_df = roster.get_data_frames()[0]
+            roster_df = roster.get_data_frames()[0].head(12)
         except Exception:
             continue
 
-        for _, player_row in roster_df.head(12).iterrows():
+        for _, player_row in roster_df.iterrows():
             player_id = int(player_row.get("PLAYER_ID"))
             player_name = player_row.get("PLAYER")
             try:
                 player_log = playergamelog.PlayerGameLog(player_id=player_id, season=season)
-                player_df = player_log.get_data_frames()[0].head(games_back).copy()
+                pl_df = player_log.get_data_frames()[0].head(games_back).copy()
             except Exception:
                 continue
 
-            for _, row in player_df.iterrows():
+            for _, pr in pl_df.iterrows():
+                opp_name = str(pr.get("MATCHUP", "Unknown"))
+                if " @ " in opp_name:
+                    opp_name = opp_name.split(" @ ", 1)[1]
+                elif " vs. " in opp_name.lower():
+                    opp_name = opp_name.split(" vs. ", 1)[1]
                 player_records.append({
-                    "date": row.get("GAME_DATE"),
+                    "date": pr.get("GAME_DATE"),
                     "player": player_name,
                     "team": team["full_name"],
-                    "opponent": parse_matchup_opponent(row.get("MATCHUP", "Unknown")),
-                    "minutes": minute_to_float(row.get("MIN", 0)),
-                    "points": float(row.get("PTS", 0.0) or 0.0),
-                    "assists": float(row.get("AST", 0.0) or 0.0),
-                    "rebounds": float(row.get("REB", 0.0) or 0.0),
-                    "blocks": float(row.get("BLK", 0.0) or 0.0),
+                    "opponent": opp_name,
+                    "minutes": normalize_minutes(pr.get("MIN", 0)),
+                    "points": float(pr.get("PTS", 0.0) or 0.0),
+                    "assists": float(pr.get("AST", 0.0) or 0.0),
+                    "rebounds": float(pr.get("REB", 0.0) or 0.0),
+                    "blocks": float(pr.get("BLK", 0.0) or 0.0),
                 })
+
+    if not team_records or not player_records:
+        raise ValueError("No live NBA data was returned for the selected season.")
 
     teams_df = pd.DataFrame(team_records)
     players_df = pd.DataFrame(player_records)
-
-    if teams_df.empty or players_df.empty:
-        raise ValueError("No live NBA data could be fetched for the selected season.")
-
     teams_df["date"] = pd.to_datetime(teams_df["date"], errors="coerce")
     players_df["date"] = pd.to_datetime(players_df["date"], errors="coerce")
     teams_df = teams_df.dropna(subset=["date"]).sort_values("date").reset_index(drop=True)
@@ -328,9 +291,8 @@ def fetch_live_nba_data(season="2024-25", games_back=10):
 
 
 with st.sidebar:
-    st.header("Input")
+    st.header("Data source")
     use_demo = st.checkbox("Use sample data", value=True)
-
     if not use_demo:
         team_file = st.file_uploader("Upload team CSV", type="csv")
         player_file = st.file_uploader("Upload player CSV", type="csv")
@@ -338,28 +300,28 @@ with st.sidebar:
         team_file = None
         player_file = None
 
-    st.caption("This is a free analytics tool. It does not guarantee wins or exact outcomes.")
+    if st.checkbox("Try free live NBA data", value=False):
+        if nba_teams is None:
+            st.info("Install nba_api to enable the live data option.")
+        else:
+            season_choice = st.selectbox("Season", ["2024-25", "2023-24", "2022-23"], index=0)
+            if st.button("Load live data"):
+                try:
+                    live_teams, live_players = fetch_live_nba_data(season=season_choice, games_back=10)
+                    st.session_state["live_teams"] = live_teams
+                    st.session_state["live_players"] = live_players
+                    st.success("Live data loaded successfully.")
+                except Exception as exc:
+                    st.warning(f"Live data fetch failed: {exc}")
 
-    st.markdown("---")
-    st.subheader("Live free data")
-    use_live = st.checkbox("Load live NBA data (free, no API key)", value=False)
-    season = st.selectbox("Season", ["2024-25", "2023-24", "2022-23", "2021-22"], index=0) if use_live else "2024-25"
+    st.caption("This is a research tool, not a guaranteed profit engine.")
 
-    if use_live:
-        if st.button("Fetch live data"):
-            try:
-                live_teams_df, live_players_df = fetch_live_nba_data(season=season, games_back=10)
-                st.session_state["live_teams_df"] = live_teams_df
-                st.session_state["live_players_df"] = live_players_df
-                st.success("Live NBA data loaded successfully.")
-            except Exception as exc:
-                st.warning(f"Live data could not be loaded automatically: {exc}")
 
 if use_demo:
     teams_df, players_df = load_demo_data()
-elif "live_teams_df" in st.session_state and "live_players_df" in st.session_state and use_live:
-    teams_df = st.session_state["live_teams_df"]
-    players_df = st.session_state["live_players_df"]
+elif "live_teams" in st.session_state and "live_players" in st.session_state and st.session_state["live_teams"] is not None:
+    teams_df = st.session_state["live_teams"]
+    players_df = st.session_state["live_players"]
 else:
     try:
         teams_df, players_df = load_uploaded_data(team_file, player_file)
@@ -378,51 +340,40 @@ with col2:
 
 match = estimate_team_matchup(team_a, team_b, teams_df)
 
-m1, m2, m3, m4 = st.columns(4)
-m1.metric(f"Expected points — {team_a}", f"{match['proj_a']:.1f}")
-m2.metric(f"Expected points — {team_b}", f"{match['proj_b']:.1f}")
-m3.metric("Projected total", f"{match['total']:.1f}")
-m4.metric("Over 220 probability", f"{match['over_total']:.0%}")
+c1, c2, c3, c4 = st.columns(4)
+c1.metric(f"Expected points — {team_a}", f"{match['proj_a']:.1f}")
+c2.metric(f"Expected points — {team_b}", f"{match['proj_b']:.1f}")
+c3.metric("Projected total", f"{match['total']:.1f}")
+c4.metric("Over 220 prob", f"{match['over_total']:.0%}")
 
 st.write(f"**Win probability:** {team_a} {match['win_a']:.0%} | {team_b} {match['win_b']:.0%}")
 
 st.markdown("---")
 
-team_a_summary = match["a_summary"]
-team_b_summary = match["b_summary"]
+st.subheader("Team trend summary")
+info_cols = st.columns(4)
+with info_cols[0]:
+    st.metric(f"{team_a} PPG", f"{match['a_avg_points']:.1f}")
+with info_cols[1]:
+    st.metric(f"{team_a} opp PPG", f"{match['a_opp_avg']:.1f}")
+with info_cols[2]:
+    st.metric(f"{team_b} PPG", f"{match['b_avg_points']:.1f}")
+with info_cols[3]:
+    st.metric(f"{team_b} opp PPG", f"{match['b_opp_avg']:.1f}")
 
-a_cols = st.columns(4)
-with a_cols[0]:
-    st.metric(f"{team_a} PPG", f"{team_a_summary['avg_points']:.1f}")
-with a_cols[1]:
-    st.metric(f"{team_a} OPP PPG", f"{team_a_summary['avg_opp_points']:.1f}")
-with a_cols[2]:
-    st.metric(f"{team_a} last 5 diff", f"{team_a_summary['last5_diff']:.1f}")
-with a_cols[3]:
-    st.metric(f"{team_a} rating", f"{team_a_summary['rating']:.1f}")
-
-b_cols = st.columns(4)
-with b_cols[0]:
-    st.metric(f"{team_b} PPG", f"{team_b_summary['avg_points']:.1f}")
-with b_cols[1]:
-    st.metric(f"{team_b} OPP PPG", f"{team_b_summary['avg_opp_points']:.1f}")
-with b_cols[2]:
-    st.metric(f"{team_b} last 5 diff", f"{team_b_summary['last5_diff']:.1f}")
-with b_cols[3]:
-    st.metric(f"{team_b} rating", f"{team_b_summary['rating']:.1f}")
-
-st.subheader("Team trend charts")
-team_chart_data = pd.DataFrame({
-    team_a: team_a_summary["points_history"].tail(10).reset_index(drop=True),
-    team_b: team_b_summary["points_history"].tail(10).reset_index(drop=True),
+team_chart_df = pd.DataFrame({
+    team_a: pd.to_numeric(teams_df[teams_df['team'] == team_a]['points'], errors='coerce').tail(10).reset_index(drop=True),
+    team_b: pd.to_numeric(teams_df[teams_df['team'] == team_b]['points'], errors='coerce').tail(10).reset_index(drop=True),
 })
-st.line_chart(team_chart_data, use_container_width=True)
+st.line_chart(team_chart_df, use_container_width=True)
+
+st.markdown("---")
 
 st.subheader("Player projection")
 players = sorted(players_df["player"].astype(str).unique())
 player_name = st.selectbox("Player", players)
 player_team = st.selectbox("Player team", sorted(players_df[players_df["player"].astype(str) == player_name]["team"].unique()))
-stat_name = st.selectbox("Stat", PLAYER_STATS)
+stat_name = st.selectbox("Statistic", PLAYER_STATS)
 line_value = st.number_input(f"Line for {stat_name}", min_value=0.0, value=20.0, step=0.5)
 
 player_result = estimate_player_projection(player_name, player_team, players_df, stat_name, line_value)
@@ -431,20 +382,23 @@ p1, p2, p3, p4 = st.columns(4)
 p1.metric("Projected stat", f"{player_result['projection']:.1f}")
 p2.metric("Above line", f"{player_result['over_probability']:.0%}")
 p3.metric("Recent avg", f"{player_result['recent_avg']:.1f}")
-p4.metric("Games in sample", f"{player_result['games']}")
+p4.metric("Games", f"{player_result['games']}")
 
-player_history = pd.DataFrame({
-    "value": player_result["history"].tolist(),
+hist_df = pd.DataFrame({
     "game": [str(i + 1) for i in range(len(player_result["history"]))],
+    "value": player_result["history"].tolist(),
 })
-st.line_chart(player_history.set_index("game")["value"], use_container_width=True)
+if not hist_df.empty:
+    st.line_chart(hist_df.set_index("game")["value"], use_container_width=True)
+
+st.markdown("---")
 
 st.subheader("Data preview")
-preview_mode = st.radio("Preview", ["Teams", "Players"], horizontal=True)
-if preview_mode == "Teams":
+preview = st.radio("Preview", ["Teams", "Players"], horizontal=True)
+if preview == "Teams":
     st.dataframe(teams_df.head(20), use_container_width=True)
 else:
     st.dataframe(players_df.head(20), use_container_width=True)
 
 st.markdown("---")
-st.caption("Free NBA analysis app — built for research, trend review, and probabilistic exploration. This does not guarantee profits or exact match results.")
+st.caption("Free NBA analysis app for research and exploratory decision support. It does not guarantee profits, exact outcomes, or reliable betting edges.")
