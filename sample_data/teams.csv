@@ -1,0 +1,25 @@
+date,team,opponent,points,opponent_points
+2024-01-01,Boston Celtics,Miami Heat,120,112
+2024-01-04,Boston Celtics,New York Knicks,118,108
+2024-01-07,Boston Celtics,Toronto Raptors,126,111
+2024-01-10,Boston Celtics,Milwaukee Bucks,114,116
+2024-01-12,Boston Celtics,Cleveland Cavaliers,121,110
+2024-01-15,Boston Celtics,Chicago Bulls,123,101
+2024-01-02,Miami Heat,Boston Celtics,109,115
+2024-01-05,Miami Heat,Atlanta Hawks,110,105
+2024-01-08,Miami Heat,Toronto Raptors,112,107
+2024-01-11,Miami Heat,Brooklyn Nets,104,99
+2024-01-14,Miami Heat,New York Knicks,108,111
+2024-01-16,Miami Heat,Orlando Magic,117,106
+2024-01-03,Los Angeles Lakers,Golden State Warriors,116,119
+2024-01-06,Los Angeles Lakers,Phoenix Suns,122,118
+2024-01-09,Los Angeles Lakers,Minnesota Timberwolves,119,122
+2024-01-11,Los Angeles Lakers,Sacramento Kings,124,116
+2024-01-13,Los Angeles Lakers,Dallas Mavericks,110,113
+2024-01-17,Los Angeles Lakers,Oklahoma City Thunder,122,117
+2024-01-04,Golden State Warriors,Los Angeles Lakers,118,114
+2024-01-07,Golden State Warriors,Phoenix Suns,115,110
+2024-01-10,Golden State Warriors,Sacramento Kings,112,109
+2024-01-12,Golden State Warriors,Portland Trail Blazers,120,108
+2024-01-15,Golden State Warriors,Houston Rockets,121,118
+2024-01-18,Golden State Warriors,Denver Nuggets,108,114
