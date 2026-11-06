@@ -6,9 +6,9 @@ TEAM_COLUMNS = ["date", "team", "opponent", "points", "opponent_points"]
 PLAYER_COLUMNS = ["date", "player", "team", "opponent", "minutes", "points", "assists", "rebounds", "blocks"]
 PLAYER_STATS = ["points", "assists", "rebounds", "blocks"]
 
-st.set_page_config(page_title="NBA Match Analyzer", page_icon="🏀")
+st.set_page_config(page_title="NBA Match Analyzer", page_icon="🏀", layout="wide")
 st.title("🏀 NBA Match Analyzer")
-st.caption("Free MVP for team and player trend analysis and matchup probability estimates.")
+st.caption("Free analytics dashboard for team form, player trends, and probability-based matchup analysis.")
 
 
 @st.cache_data
@@ -70,6 +70,7 @@ def load_demo_data():
             {"date": "2024-01-18", "player": "Stephen Curry", "team": "Golden State Warriors", "opponent": "Denver Nuggets", "minutes": 39, "points": 31, "assists": 10, "rebounds": 5, "blocks": 1},
         ]
     )
+
     teams["date"] = pd.to_datetime(teams["date"])
     players["date"] = pd.to_datetime(players["date"])
     return teams, players
@@ -99,89 +100,118 @@ def load_uploaded_data(team_upload, player_upload):
     return teams, players
 
 
-def weighted_recent_mean(frame, stat):
+def recent_window(values, window=10):
+    return pd.Series(values).tail(window).reset_index(drop=True)
+
+
+def weighted_recent_mean(frame, stat, window=10):
     values = pd.to_numeric(frame[stat], errors="coerce").dropna()
     if values.empty:
         return np.nan
-    recent = values.tail(min(10, len(values)))
+    recent = recent_window(values, window)
     return 0.35 * values.mean() + 0.65 * recent.mean()
 
 
-def estimate_team_matchup(team_a, team_b, teams_df):
-    a = teams_df[teams_df["team"].astype(str) == team_a].copy()
-    b = teams_df[teams_df["team"].astype(str) == team_b].copy()
+def team_summary(team_name, teams_df):
+    team = teams_df[teams_df["team"].astype(str) == team_name].copy().sort_values("date").reset_index(drop=True)
+    if team.empty:
+        raise ValueError(f"No data available for {team_name}.")
 
-    if a.empty or b.empty:
-        raise ValueError("Missing data for one or both teams.")
-
-    pred_a = np.mean([
-        weighted_recent_mean(a, "points"),
-        weighted_recent_mean(b, "opponent_points"),
-    ])
-    pred_b = np.mean([
-        weighted_recent_mean(b, "points"),
-        weighted_recent_mean(a, "opponent_points"),
-    ])
-
-    sigma_a = max(6.0, a["points"].std(ddof=0) if not a["points"].dropna().empty else 6.0)
-    sigma_b = max(6.0, b["points"].std(ddof=0) if not b["points"].dropna().empty else 6.0)
-
-    rng = np.random.default_rng(42)
-    sim_a = rng.normal(pred_a, sigma_a, 25000)
-    sim_b = rng.normal(pred_b, sigma_b, 25000)
-
-    win_a = float(np.mean(sim_a > sim_b))
-    win_b = float(np.mean(sim_b > sim_a))
-    over_total = float(np.mean((sim_a + sim_b) > 220.0))
+    team["point_diff"] = pd.to_numeric(team["points"], errors="coerce") - pd.to_numeric(team["opponent_points"], errors="coerce")
+    last5_points = recent_window(pd.to_numeric(team["points"], errors="coerce"), 5).mean()
+    last5_opp_points = recent_window(pd.to_numeric(team["opponent_points"], errors="coerce"), 5).mean()
+    last5_diff = recent_window(pd.to_numeric(team["point_diff"], errors="coerce"), 5).mean()
+    avg_points = team["points"].mean()
+    avg_opp_points = team["opponent_points"].mean()
+    rating = (avg_points - avg_opp_points) * 0.7 + last5_diff * 0.3
 
     return {
-        "pred_a": float(pred_a),
-        "pred_b": float(pred_b),
-        "win_a": win_a,
-        "win_b": win_b,
-        "over_total": over_total,
-        "team_a_avg": float(a["points"].mean()),
-        "team_b_avg": float(b["points"].mean()),
-        "team_a_opponent_avg": float(a["opponent_points"].mean()),
-        "team_b_opponent_avg": float(b["opponent_points"].mean()),
+        "team": team_name,
+        "avg_points": float(avg_points),
+        "avg_opp_points": float(avg_opp_points),
+        "last5_points": float(last5_points),
+        "last5_opp_points": float(last5_opp_points),
+        "last5_diff": float(last5_diff),
+        "rating": float(rating),
+        "points_history": pd.Series(pd.to_numeric(team["points"], errors="coerce").dropna()),
+        "opp_points_history": pd.Series(pd.to_numeric(team["opponent_points"], errors="coerce").dropna()),
     }
 
 
-def estimate_player_projection(player_name, team_name, players_df, stat_name, line_value):
-    player_rows = players_df[(players_df["player"].astype(str) == player_name) & (players_df["team"].astype(str) == team_name)].copy()
-    if player_rows.empty:
-        raise ValueError("No data for this player and team.")
+def estimate_team_matchup(team_a, team_b, teams_df):
+    a = team_summary(team_a, teams_df)
+    b = team_summary(team_b, teams_df)
 
-    projection = weighted_recent_mean(player_rows, stat_name)
-    recent = pd.to_numeric(player_rows[stat_name], errors="coerce").dropna().tail(10)
-    sigma = float(max(1.0, recent.std(ddof=0) if len(recent) > 1 else 1.0))
+    proj_a = 0.5 * (a["last5_points"] + b["last5_opp_points"])
+    proj_b = 0.5 * (b["last5_points"] + a["last5_opp_points"])
 
-    rng = np.random.default_rng(7)
-    sims = rng.normal(projection, sigma, 20000)
-    over = float(np.mean(sims > line_value))
+    diff = proj_a - proj_b
+    win_a = 1 / (1 + np.exp(-(diff / 12.0)))
+    win_b = 1 - win_a
+    total = proj_a + proj_b
+
+    rng = np.random.default_rng(42)
+    sim_a = rng.normal(proj_a, max(5.5, a["last5_points"] * 0.14), 30000)
+    sim_b = rng.normal(proj_b, max(5.5, b["last5_points"] * 0.14), 30000)
+    over_total = float(np.mean(sim_a + sim_b > 220.0))
 
     return {
+        "team_a": team_a,
+        "team_b": team_b,
+        "proj_a": float(proj_a),
+        "proj_b": float(proj_b),
+        "total": float(total),
+        "win_a": float(win_a),
+        "win_b": float(win_b),
+        "over_total": float(over_total),
+        "a_summary": a,
+        "b_summary": b,
+    }
+
+
+def estimate_player_projection(player_name, player_team, players_df, stat_name, line_value):
+    player_rows = players_df[
+        (players_df["player"].astype(str) == player_name) & (players_df["team"].astype(str) == player_team)
+    ].copy().sort_values("date").reset_index(drop=True)
+
+    if player_rows.empty:
+        raise ValueError("No data available for this player and team.")
+
+    recent = pd.to_numeric(player_rows[stat_name], errors="coerce").dropna()
+    if recent.empty:
+        raise ValueError("Player stat values not available.")
+
+    recent_10 = recent.tail(10)
+    projection = 0.5 * recent_10.mean() + 0.5 * recent.mean()
+    sigma = max(1.0, recent_10.std(ddof=0) if len(recent_10) > 1 else 1.0)
+
+    rng = np.random.default_rng(7)
+    sims = rng.normal(projection, sigma, 25000)
+    over = float(np.mean(sims > float(line_value)))
+
+    return {
+        "player": player_name,
+        "team": player_team,
+        "stat": stat_name,
         "projection": float(projection),
-        "stat_name": stat_name,
         "line_value": float(line_value),
         "over_probability": over,
-        "recent_avg": float(recent.mean()) if not recent.empty else float(projection),
-        "games": int(len(player_rows)),
+        "recent_avg": float(recent_10.mean()),
+        "games": int(len(recent)),
+        "history": recent.reset_index(drop=True),
     }
 
 
 with st.sidebar:
     st.header("Input")
     use_demo = st.checkbox("Use sample data", value=True)
-
     if not use_demo:
         team_file = st.file_uploader("Upload team CSV", type="csv")
         player_file = st.file_uploader("Upload player CSV", type="csv")
     else:
         team_file = None
         player_file = None
-
-    st.caption("This is a free analysis tool. It does not guarantee wins or exact outcomes.")
+    st.caption("This is a free analytics tool and not a guaranteed betting system.")
 
 
 if use_demo:
@@ -195,50 +225,77 @@ else:
 
 team_names = sorted(teams_df["team"].astype(str).unique())
 
-st.subheader("Team matchup analysis")
+st.subheader("Matchup overview")
 col1, col2 = st.columns(2)
 with col1:
     team_a = st.selectbox("Team A", team_names, index=0)
 with col2:
     team_b = st.selectbox("Team B", [t for t in team_names if t != team_a], index=0)
 
-try:
-    result = estimate_team_matchup(team_a, team_b, teams_df)
-except Exception as exc:
-    st.error(f"Matchup estimation failed: {exc}")
-    st.stop()
+match = estimate_team_matchup(team_a, team_b, teams_df)
 
-m1, m2, m3 = st.columns(3)
-m1.metric(f"Expected points — {team_a}", f"{result['pred_a']:.1f}")
-m2.metric(f"Expected points — {team_b}", f"{result['pred_b']:.1f}")
-m3.metric("Projected total", f"{result['pred_a'] + result['pred_b']:.1f}")
+m1, m2, m3, m4 = st.columns(4)
+m1.metric(f"Expected points — {team_a}", f"{match['proj_a']:.1f}")
+m2.metric(f"Expected points — {team_b}", f"{match['proj_b']:.1f}")
+m3.metric("Projected total", f"{match['total']:.1f}")
+m4.metric("Over 220 probability", f"{match['over_total']:.0%}")
 
-st.write(f"**Win probability:** {team_a} {result['win_a']:.0%} | {team_b} {result['win_b']:.0%}")
+st.write(f"**Win probability:** {team_a} {match['win_a']:.0%} | {team_b} {match['win_b']:.0%}")
 
-with st.expander("Reasoning"):
-    st.write(
-        f"{team_a} has averaged {result['team_a_avg']:.1f} points in the sample, while {team_b} has allowed {result['team_b_opponent_avg']:.1f} per game on average. "
-        f"{team_b} has averaged {result['team_b_avg']:.1f} points, while {team_a} has allowed {result['team_a_opponent_avg']:.1f} points per game. "
-        "This is a simple trend-based estimate, not a guarantee."
-    )
+st.markdown("---")
+
+team_a_summary = match["a_summary"]
+team_b_summary = match["b_summary"]
+
+a_cols = st.columns(4)
+with a_cols[0]:
+    st.metric(f"{team_a} PPG", f"{team_a_summary['avg_points']:.1f}")
+with a_cols[1]:
+    st.metric(f"{team_a} OPP PPG", f"{team_a_summary['avg_opp_points']:.1f}")
+with a_cols[2]:
+    st.metric(f"{team_a} last 5 diff", f"{team_a_summary['last5_diff']:.1f}")
+with a_cols[3]:
+    st.metric(f"{team_a} rating", f"{team_a_summary['rating']:.1f}")
+
+b_cols = st.columns(4)
+with b_cols[0]:
+    st.metric(f"{team_b} PPG", f"{team_b_summary['avg_points']:.1f}")
+with b_cols[1]:
+    st.metric(f"{team_b} OPP PPG", f"{team_b_summary['avg_opp_points']:.1f}")
+with b_cols[2]:
+    st.metric(f"{team_b} last 5 diff", f"{team_b_summary['last5_diff']:.1f}")
+with b_cols[3]:
+    st.metric(f"{team_b} rating", f"{team_b_summary['rating']:.1f}")
+
+st.subheader("Team trend charts")
+team_chart_data = pd.DataFrame({
+    team_a: team_a_summary["points_history"].tail(10).reset_index(drop=True),
+    team_b: team_b_summary["points_history"].tail(10).reset_index(drop=True),
+})
+st.line_chart(team_chart_data, use_container_width=True)
 
 st.subheader("Player projection")
 players = sorted(players_df["player"].astype(str).unique())
 player_name = st.selectbox("Player", players)
 player_team = st.selectbox("Player team", sorted(players_df[players_df["player"].astype(str) == player_name]["team"].unique()))
-stat_name = st.selectbox("Statistic", PLAYER_STATS)
+stat_name = st.selectbox("Stat", PLAYER_STATS)
 line_value = st.number_input(f"Line for {stat_name}", min_value=0.0, value=20.0, step=0.5)
 
 player_result = estimate_player_projection(player_name, player_team, players_df, stat_name, line_value)
 
-pp1, pp2, pp3 = st.columns(3)
-pp1.metric(f"Projected {stat_name}", f"{player_result['projection']:.1f}")
-pp2.metric("Above line", f"{player_result['over_probability']:.0%}")
-pp3.metric("Games in sample", f"{player_result['games']}")
+p1, p2, p3, p4 = st.columns(4)
+p1.metric("Projected stat", f"{player_result['projection']:.1f}")
+p2.metric("Above line", f"{player_result['over_probability']:.0%}")
+p3.metric("Recent avg", f"{player_result['recent_avg']:.1f}")
+p4.metric("Games in sample", f"{player_result['games']}")
 
-st.caption("This forecast uses recent game form and a simple probability simulation. It is better used for hypothesis testing than for certainty.")
+player_history = pd.DataFrame({
+    "value": player_result["history"].tolist(),
+    "game": [str(i + 1) for i in range(len(player_result["history"]))],
+})
+st.line_chart(player_history.set_index("game")["value"], use_container_width=True)
 
-st.subheader("Raw data preview")
+st.subheader("Data preview")
 preview_mode = st.radio("Preview", ["Teams", "Players"], horizontal=True)
 if preview_mode == "Teams":
     st.dataframe(teams_df.head(20), use_container_width=True)
@@ -246,4 +303,4 @@ else:
     st.dataframe(players_df.head(20), use_container_width=True)
 
 st.markdown("---")
-st.caption("Free NBA analysis app — for research and documentation only. Not a guaranteed winning system.")
+st.caption("Free NBA analysis app — built for research, trend review, and probabilistic exploration. This does not guarantee profits or exact match results.")
